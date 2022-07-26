@@ -19,6 +19,7 @@ namespace GlobalRootSignatureParams {
     enum Value { 
         OutputViewSlot = 0,
         AccelerationStructureSlot,
+        UnboundDescriptorTable,
         Count 
     };
 }
@@ -56,6 +57,9 @@ private:
     ComPtr<ID3D12GraphicsCommandList4> m_dxrCommandList;
     ComPtr<ID3D12StateObject> m_dxrStateObject;
 
+    ComPtr<ID3D12Resource> m_textureUploads[2];
+    ComPtr<ID3D12Resource> m_textures[2];
+
     // Root signatures
     ComPtr<ID3D12RootSignature> m_raytracingGlobalRootSignature;
     ComPtr<ID3D12RootSignature> m_raytracingLocalRootSignature;
@@ -73,6 +77,7 @@ private:
     struct Vertex { float v1, v2, v3; };
     ComPtr<ID3D12Resource> m_indexBuffer;
     ComPtr<ID3D12Resource> m_vertexBuffer;
+
 
     // Acceleration structure
     ComPtr<ID3D12Resource> m_accelerationStructure;

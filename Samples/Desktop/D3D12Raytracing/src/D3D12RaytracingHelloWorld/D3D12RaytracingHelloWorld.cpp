@@ -106,7 +106,16 @@ void D3D12RaytracingHelloWorld::CreateRootSignatures()
         CD3DX12_ROOT_PARAMETER rootParameters[GlobalRootSignatureParams::Count];
         rootParameters[GlobalRootSignatureParams::OutputViewSlot].InitAsDescriptorTable(1, &UAVDescriptor);
         rootParameters[GlobalRootSignatureParams::AccelerationStructureSlot].InitAsShaderResourceView(0);
-        CD3DX12_ROOT_SIGNATURE_DESC globalRootSignatureDesc(ARRAYSIZE(rootParameters), rootParameters);
+
+        CD3DX12_DESCRIPTOR_RANGE unboundSRVRange;
+        unboundSRVRange.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, -1, 0, 1);
+        rootParameters[GlobalRootSignatureParams::UnboundDescriptorTable].InitAsDescriptorTable(1, &unboundSRVRange);
+
+        D3D12_STATIC_SAMPLER_DESC sampler = CD3DX12_STATIC_SAMPLER_DESC(0);
+
+        CD3DX12_ROOT_SIGNATURE_DESC globalRootSignatureDesc(ARRAYSIZE(rootParameters), rootParameters, 1, &sampler);
+
+
         SerializeAndCreateRaytracingRootSignature(globalRootSignatureDesc, &m_raytracingGlobalRootSignature);
     }
 
@@ -249,9 +258,11 @@ void D3D12RaytracingHelloWorld::CreateDescriptorHeap()
     auto device = m_deviceResources->GetD3DDevice();
 
     D3D12_DESCRIPTOR_HEAP_DESC descriptorHeapDesc = {};
-    // Allocate a heap for a single descriptor:
+    // Allocate a heap for three descriptors:
     // 1 - raytracing output texture UAV
-    descriptorHeapDesc.NumDescriptors = 1; 
+    // 2 - SRV for first triangle
+    // 3 - SRV for second triangle
+    descriptorHeapDesc.NumDescriptors = 3; 
     descriptorHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
     descriptorHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     descriptorHeapDesc.NodeMask = 0;
@@ -265,6 +276,14 @@ void D3D12RaytracingHelloWorld::CreateDescriptorHeap()
 void D3D12RaytracingHelloWorld::BuildGeometry()
 {
     auto device = m_deviceResources->GetD3DDevice();
+    auto commandList = m_deviceResources->GetCommandList();
+    auto commandQueue = m_deviceResources->GetCommandQueue();
+    auto commandAllocator = m_deviceResources->GetCommandAllocator();
+
+    commandList->Reset(commandAllocator, nullptr);
+
+    // Reset the command list for the acceleration structure construction.
+    commandList->Reset(commandAllocator, nullptr);
     Index indices[] =
     {
         0, 1, 2
@@ -284,7 +303,44 @@ void D3D12RaytracingHelloWorld::BuildGeometry()
 
     AllocateUploadBuffer(device, vertices, sizeof(vertices), &m_vertexBuffer);
     AllocateUploadBuffer(device, indices, sizeof(indices), &m_indexBuffer);
+
+    // Create two textures
+    D3D12_RESOURCE_DESC texDesc = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R8G8B8A8_UNORM, 1, 1, 1, 1);
+    D3D12_HEAP_PROPERTIES defaultProps = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
+
+    for (int i = 0; i < 2; i++)
+    {
+        ThrowIfFailed(device->CreateCommittedResource(&defaultProps, D3D12_HEAP_FLAG_NONE, &texDesc,
+            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, nullptr, IID_PPV_ARGS(m_textures[i].ReleaseAndGetAddressOf())));
+
+        D3D12_CPU_DESCRIPTOR_HANDLE handle;
+        AllocateDescriptor(&handle, 1 + i);
+
+        UINT colour = (i == 0) ? 0xFF0000FF : 0xFF00FFFF;
+        AllocateUploadBuffer(device, &colour, 4, &m_textureUploads[i]);
+
+        D3D12_TEXTURE_COPY_LOCATION src = {};
+        src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+        src.pResource = m_textureUploads[i].Get();
+        src.PlacedFootprint.Footprint.Format = m_textures[i]->GetDesc().Format;
+        src.PlacedFootprint.Footprint.Width = src.PlacedFootprint.Footprint.Height = src.PlacedFootprint.Footprint.Depth = 1;
+        src.PlacedFootprint.Footprint.RowPitch = 256;
+
+        D3D12_TEXTURE_COPY_LOCATION dst = {};
+        dst.pResource = m_textures[i].Get();
+        dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+
+        commandList->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+
+        device->CreateShaderResourceView(m_textures[i].Get(), nullptr, handle);
+    }
+
+    m_deviceResources->ExecuteCommandList();
+
+    // Wait for GPU to finish as the locally created temporary GPU resources will get released once we go out of scope.
+    m_deviceResources->WaitForGpu();
 }
+
 
 // Build acceleration structures needed for raytracing.
 void D3D12RaytracingHelloWorld::BuildAccelerationStructures()
@@ -318,7 +374,7 @@ void D3D12RaytracingHelloWorld::BuildAccelerationStructures()
     D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS topLevelInputs = {};
     topLevelInputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
     topLevelInputs.Flags = buildFlags;
-    topLevelInputs.NumDescs = 1;
+    topLevelInputs.NumDescs = 2;
     topLevelInputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
 
     D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO topLevelPrebuildInfo = {};
@@ -327,6 +383,7 @@ void D3D12RaytracingHelloWorld::BuildAccelerationStructures()
 
     D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO bottomLevelPrebuildInfo = {};
     D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS bottomLevelInputs = topLevelInputs;
+    bottomLevelInputs.NumDescs = 1;
     bottomLevelInputs.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
     bottomLevelInputs.pGeometryDescs = &geometryDesc;
     m_dxrDevice->GetRaytracingAccelerationStructurePrebuildInfo(&bottomLevelInputs, &bottomLevelPrebuildInfo);
@@ -351,10 +408,17 @@ void D3D12RaytracingHelloWorld::BuildAccelerationStructures()
 
     // Create an instance desc for the bottom-level acceleration structure.
     ComPtr<ID3D12Resource> instanceDescs;
-    D3D12_RAYTRACING_INSTANCE_DESC instanceDesc = {};
-    instanceDesc.Transform[0][0] = instanceDesc.Transform[1][1] = instanceDesc.Transform[2][2] = 1;
-    instanceDesc.InstanceMask = 1;
-    instanceDesc.AccelerationStructure = m_bottomLevelAccelerationStructure->GetGPUVirtualAddress();
+    D3D12_RAYTRACING_INSTANCE_DESC instanceDesc[2] = {};
+
+    for (int i = 0; i < 2; i++)
+    {
+        instanceDesc[i].Transform[0][0] = instanceDesc[i].Transform[1][1] = instanceDesc[i].Transform[2][2] = 1;
+        instanceDesc[i].Transform[0][3] = i - 0.5f;
+        instanceDesc[i].Transform[2][3] = i;
+        instanceDesc[i].InstanceMask = 1;
+        instanceDesc[i].AccelerationStructure = m_bottomLevelAccelerationStructure->GetGPUVirtualAddress();
+    }
+
     AllocateUploadBuffer(device, &instanceDesc, sizeof(instanceDesc), &instanceDescs, L"InstanceDescs");
 
     // Bottom Level Acceleration Structure desc
@@ -486,6 +550,9 @@ void D3D12RaytracingHelloWorld::DoRaytracing()
     commandList->SetDescriptorHeaps(1, m_descriptorHeap.GetAddressOf());
     commandList->SetComputeRootDescriptorTable(GlobalRootSignatureParams::OutputViewSlot, m_raytracingOutputResourceUAVGpuDescriptor);
     commandList->SetComputeRootShaderResourceView(GlobalRootSignatureParams::AccelerationStructureSlot, m_topLevelAccelerationStructure->GetGPUVirtualAddress());
+
+    auto firstUnboundedTableDescriptor = CD3DX12_GPU_DESCRIPTOR_HANDLE(m_descriptorHeap->GetGPUDescriptorHandleForHeapStart(), 1, m_descriptorSize);
+    commandList->SetComputeRootDescriptorTable(GlobalRootSignatureParams::UnboundDescriptorTable, firstUnboundedTableDescriptor);
     DispatchRays(m_dxrCommandList.Get(), m_dxrStateObject.Get(), &dispatchDesc);
 }
 

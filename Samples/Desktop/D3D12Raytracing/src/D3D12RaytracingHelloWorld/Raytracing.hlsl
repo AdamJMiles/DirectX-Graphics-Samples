@@ -18,6 +18,9 @@ RaytracingAccelerationStructure Scene : register(t0, space0);
 RWTexture2D<float4> RenderTarget : register(u0);
 ConstantBuffer<RayGenConstantBuffer> g_rayGenCB : register(b0);
 
+Texture2D<float4> allTextures[] : register(t0, space1);
+SamplerState samp : register(s0);
+
 typedef BuiltInTriangleIntersectionAttributes MyAttributes;
 struct RayPayload
 {
@@ -69,8 +72,9 @@ void MyRaygenShader()
 [shader("closesthit")]
 void MyClosestHitShader(inout RayPayload payload, in MyAttributes attr)
 {
-    float3 barycentrics = float3(1 - attr.barycentrics.x - attr.barycentrics.y, attr.barycentrics.x, attr.barycentrics.y);
-    payload.color = float4(barycentrics, 1);
+    uint instanceIndex = InstanceIndex();
+    float4 color = allTextures[instanceIndex].SampleLevel(samp, float2(0.5, 0.5), 0);
+    payload.color = color;
 }
 
 [shader("miss")]
