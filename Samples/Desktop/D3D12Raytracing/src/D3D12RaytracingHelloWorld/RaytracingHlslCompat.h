@@ -24,6 +24,7 @@ struct RayGenConstantBuffer
 {
     Viewport viewport;
     Viewport stencil;
+    float textureIndex;
 };
 
 #endif // RAYTRACINGHLSLCOMPAT_H

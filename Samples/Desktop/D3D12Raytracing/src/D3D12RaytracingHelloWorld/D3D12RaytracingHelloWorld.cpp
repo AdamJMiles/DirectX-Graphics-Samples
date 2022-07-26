@@ -144,16 +144,17 @@ void D3D12RaytracingHelloWorld::CreateRaytracingInterfaces()
 // This is a root signature that enables a shader to have unique arguments that come from shader tables.
 void D3D12RaytracingHelloWorld::CreateLocalRootSignatureSubobjects(CD3DX12_STATE_OBJECT_DESC* raytracingPipeline)
 {
-    // Hit group and miss shaders in this sample are not using a local root signature and thus one is not associated with them.
+    auto localRootSignature = raytracingPipeline->CreateSubobject<CD3DX12_LOCAL_ROOT_SIGNATURE_SUBOBJECT>();
+    localRootSignature->SetRootSignature(m_raytracingLocalRootSignature.Get());
+
 
     // Local root signature to be used in a ray gen shader.
     {
-        auto localRootSignature = raytracingPipeline->CreateSubobject<CD3DX12_LOCAL_ROOT_SIGNATURE_SUBOBJECT>();
-        localRootSignature->SetRootSignature(m_raytracingLocalRootSignature.Get());
         // Shader association
         auto rootSignatureAssociation = raytracingPipeline->CreateSubobject<CD3DX12_SUBOBJECT_TO_EXPORTS_ASSOCIATION_SUBOBJECT>();
         rootSignatureAssociation->SetSubobjectToAssociate(*localRootSignature);
         rootSignatureAssociation->AddExport(c_raygenShaderName);
+        rootSignatureAssociation->AddExport(c_closestHitShaderName);
     }
 }
 
@@ -282,8 +283,6 @@ void D3D12RaytracingHelloWorld::BuildGeometry()
 
     commandList->Reset(commandAllocator, nullptr);
 
-    // Reset the command list for the acceleration structure construction.
-    commandList->Reset(commandAllocator, nullptr);
     Index indices[] =
     {
         0, 1, 2
@@ -311,7 +310,7 @@ void D3D12RaytracingHelloWorld::BuildGeometry()
     for (int i = 0; i < 2; i++)
     {
         ThrowIfFailed(device->CreateCommittedResource(&defaultProps, D3D12_HEAP_FLAG_NONE, &texDesc,
-            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, nullptr, IID_PPV_ARGS(m_textures[i].ReleaseAndGetAddressOf())));
+            D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(m_textures[i].ReleaseAndGetAddressOf())));
 
         D3D12_CPU_DESCRIPTOR_HANDLE handle;
         AllocateDescriptor(&handle, 1 + i);
@@ -331,6 +330,10 @@ void D3D12RaytracingHelloWorld::BuildGeometry()
         dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
 
         commandList->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+
+        D3D12_RESOURCE_BARRIER copyDestToNonPixelSRV = CD3DX12_RESOURCE_BARRIER::Transition(m_textures[i].Get(),
+            D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        commandList->ResourceBarrier(1, &copyDestToNonPixelSRV);
 
         device->CreateShaderResourceView(m_textures[i].Get(), nullptr, handle);
     }
@@ -417,6 +420,7 @@ void D3D12RaytracingHelloWorld::BuildAccelerationStructures()
         instanceDesc[i].Transform[2][3] = i;
         instanceDesc[i].InstanceMask = 1;
         instanceDesc[i].AccelerationStructure = m_bottomLevelAccelerationStructure->GetGPUVirtualAddress();
+        instanceDesc[i].InstanceContributionToHitGroupIndex = i;
     }
 
     AllocateUploadBuffer(device, &instanceDesc, sizeof(instanceDesc), &instanceDescs, L"InstanceDescs");
@@ -481,11 +485,13 @@ void D3D12RaytracingHelloWorld::BuildShaderTables()
         shaderIdentifierSize = D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES;
     }
 
+    struct RootArguments {
+        RayGenConstantBuffer cb;
+    };
+
     // Ray gen shader table
-    {
-        struct RootArguments {
-            RayGenConstantBuffer cb;
-        } rootArguments;
+    {        
+        RootArguments rootArguments;
         rootArguments.cb = m_rayGenCB;
 
         UINT numShaderRecords = 1;
@@ -506,10 +512,15 @@ void D3D12RaytracingHelloWorld::BuildShaderTables()
 
     // Hit group shader table
     {
-        UINT numShaderRecords = 1;
-        UINT shaderRecordSize = shaderIdentifierSize;
+        RootArguments rootArguments[2];
+        rootArguments[0].cb.textureIndex = 0.0f;
+        rootArguments[1].cb.textureIndex = 1.0f;
+
+        UINT numShaderRecords = 2;
+        UINT shaderRecordSize = shaderIdentifierSize + sizeof(rootArguments);
         ShaderTable hitGroupShaderTable(device, numShaderRecords, shaderRecordSize, L"HitGroupShaderTable");
-        hitGroupShaderTable.push_back(ShaderRecord(hitGroupShaderIdentifier, shaderIdentifierSize));
+        hitGroupShaderTable.push_back(ShaderRecord(hitGroupShaderIdentifier, shaderIdentifierSize, &rootArguments[0], sizeof(RootArguments)));
+        hitGroupShaderTable.push_back(ShaderRecord(hitGroupShaderIdentifier, shaderIdentifierSize, &rootArguments[1], sizeof(RootArguments)));
         m_hitGroupShaderTable = hitGroupShaderTable.GetResource();
     }
 }
@@ -527,10 +538,9 @@ void D3D12RaytracingHelloWorld::DoRaytracing()
     
     auto DispatchRays = [&](auto* commandList, auto* stateObject, auto* dispatchDesc)
     {
-        // Since each shader table has only one shader record, the stride is same as the size.
         dispatchDesc->HitGroupTable.StartAddress = m_hitGroupShaderTable->GetGPUVirtualAddress();
         dispatchDesc->HitGroupTable.SizeInBytes = m_hitGroupShaderTable->GetDesc().Width;
-        dispatchDesc->HitGroupTable.StrideInBytes = dispatchDesc->HitGroupTable.SizeInBytes;
+        dispatchDesc->HitGroupTable.StrideInBytes = 128;
         dispatchDesc->MissShaderTable.StartAddress = m_missShaderTable->GetGPUVirtualAddress();
         dispatchDesc->MissShaderTable.SizeInBytes = m_missShaderTable->GetDesc().Width;
         dispatchDesc->MissShaderTable.StrideInBytes = dispatchDesc->MissShaderTable.SizeInBytes;

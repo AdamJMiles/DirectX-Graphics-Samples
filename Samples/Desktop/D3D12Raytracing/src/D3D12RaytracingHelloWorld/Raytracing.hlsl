@@ -72,8 +72,9 @@ void MyRaygenShader()
 [shader("closesthit")]
 void MyClosestHitShader(inout RayPayload payload, in MyAttributes attr)
 {
-    uint instanceIndex = InstanceIndex();
-    float4 color = allTextures[instanceIndex].SampleLevel(samp, float2(0.5, 0.5), 0);
+    //uint textureIndex = InstanceIndex();
+    uint textureIndex = (uint)g_rayGenCB.textureIndex;
+    float4 color = allTextures[textureIndex].SampleLevel(samp, float2(0.5, 0.5), 0);
     payload.color = color;
 }
 
