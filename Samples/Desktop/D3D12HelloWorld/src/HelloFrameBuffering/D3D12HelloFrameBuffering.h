@@ -41,7 +41,7 @@ private:
     // available.
     // It should be noted that excessive buffering of frames dependent on user input
     // may result in noticeable latency in your app.
-    static const UINT FrameCount = 2;
+    static const UINT FrameCount = 3;
 
     struct Vertex
     {
@@ -69,7 +69,7 @@ private:
 
     // Synchronization objects.
     UINT m_frameIndex;
-    HANDLE m_fenceEvent;
+    HANDLE m_fenceEvents[FrameCount];
     ComPtr<ID3D12Fence> m_fence;
     UINT64 m_fenceValues[FrameCount];
 

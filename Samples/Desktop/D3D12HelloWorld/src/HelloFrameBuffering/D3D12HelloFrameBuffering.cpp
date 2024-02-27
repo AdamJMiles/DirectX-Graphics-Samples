@@ -238,11 +238,14 @@ void D3D12HelloFrameBuffering::LoadAssets()
         ThrowIfFailed(m_device->CreateFence(m_fenceValues[m_frameIndex], D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_fence)));
         m_fenceValues[m_frameIndex]++;
 
-        // Create an event handle to use for frame synchronization.
-        m_fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
-        if (m_fenceEvent == nullptr)
+        for (int i = 0; i < FrameCount; i++)
         {
-            ThrowIfFailed(HRESULT_FROM_WIN32(GetLastError()));
+            // Create an event handle to use for frame synchronization.
+            m_fenceEvents[i] = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+            if (m_fenceEvents[i] == nullptr)
+            {
+                ThrowIfFailed(HRESULT_FROM_WIN32(GetLastError()));
+            }
         }
 
         // Wait for the command list to execute; we are reusing the same command 
@@ -251,7 +254,7 @@ void D3D12HelloFrameBuffering::LoadAssets()
         WaitForGpu();
     }
 }
-
+ 
 // Update frame-based values.
 void D3D12HelloFrameBuffering::OnUpdate()
 {
@@ -279,7 +282,8 @@ void D3D12HelloFrameBuffering::OnDestroy()
     // cleaned up by the destructor.
     WaitForGpu();
 
-    CloseHandle(m_fenceEvent);
+    for(int i = 0; i < FrameCount; i++)
+        CloseHandle(m_fenceEvents[i]);
 }
 
 void D3D12HelloFrameBuffering::PopulateCommandList()
@@ -325,12 +329,14 @@ void D3D12HelloFrameBuffering::WaitForGpu()
     ThrowIfFailed(m_commandQueue->Signal(m_fence.Get(), m_fenceValues[m_frameIndex]));
 
     // Wait until the fence has been processed.
-    ThrowIfFailed(m_fence->SetEventOnCompletion(m_fenceValues[m_frameIndex], m_fenceEvent));
-    WaitForSingleObjectEx(m_fenceEvent, INFINITE, FALSE);
+    ThrowIfFailed(m_fence->SetEventOnCompletion(m_fenceValues[m_frameIndex], m_fenceEvents[m_frameIndex]));
+    WaitForSingleObjectEx(m_fenceEvents[m_frameIndex], INFINITE, FALSE);
 
     // Increment the fence value for the current frame.
     m_fenceValues[m_frameIndex]++;
 }
+
+#define SET_EVENT_ON_COMPLETION_IMMEDIATELY
 
 // Prepare to render the next frame.
 void D3D12HelloFrameBuffering::MoveToNextFrame()
@@ -339,14 +345,20 @@ void D3D12HelloFrameBuffering::MoveToNextFrame()
     const UINT64 currentFenceValue = m_fenceValues[m_frameIndex];
     ThrowIfFailed(m_commandQueue->Signal(m_fence.Get(), currentFenceValue));
 
+#if defined(SET_EVENT_ON_COMPLETION_IMMEDIATELY)
+    ThrowIfFailed(m_fence->SetEventOnCompletion(m_fenceValues[m_frameIndex], m_fenceEvents[m_frameIndex]));
+#endif
+
     // Update the frame index.
     m_frameIndex = m_swapChain->GetCurrentBackBufferIndex();
 
     // If the next frame is not ready to be rendered yet, wait until it is ready.
     if (m_fence->GetCompletedValue() < m_fenceValues[m_frameIndex])
     {
-        ThrowIfFailed(m_fence->SetEventOnCompletion(m_fenceValues[m_frameIndex], m_fenceEvent));
-        WaitForSingleObjectEx(m_fenceEvent, INFINITE, FALSE);
+#if !defined(SET_EVENT_ON_COMPLETION_IMMEDIATELY)
+        ThrowIfFailed(m_fence->SetEventOnCompletion(m_fenceValues[m_frameIndex], m_fenceEvents[m_frameIndex]));
+#endif
+        WaitForSingleObjectEx(m_fenceEvents[m_frameIndex], INFINITE, FALSE);
     }
 
     // Set the fence value for the next frame.
