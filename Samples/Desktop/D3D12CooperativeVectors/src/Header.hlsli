@@ -1,6 +1,8 @@
 #include "Shared.h"
 
-#define RootSig "RootFlags(CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED), RootConstants(b0, num32BitConstants=3), SRV(t0), SRV(t1), UAV(u0), UAV(u1), SRV(t2), SRV(t3)"
+
+StructuredBuffer<NetworkOffsets> g_networkOffsets : register(t3);
+StructuredBuffer<OutputOffsets> g_outputOffsets : register(t4);
 
 ByteAddressBuffer g_imageBuffer : register(t0);
 ByteAddressBuffer g_labelBuffer : register(t1);

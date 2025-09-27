@@ -3,8 +3,7 @@
 #include <dx/linalg.h>
 using namespace dx::linalg;
 
-ByteAddressBuffer inputWeights : register(t2);
-ByteAddressBuffer inputBiases : register(t3);
+RWByteAddressBuffer debugBuffer : register(u1);
 
 [RootSignature(RootSig)]
 [numthreads(28, 28, 1)]
@@ -23,9 +22,7 @@ void main( uint3 DTid : SV_DispatchThreadID, uint2 gid : SV_GroupThreadID)
 	uint pixelIndex = gid.y * 28 + gid.x;
 	float16_t pixel = GetPixel(imageIndex, pixelIndex);
 
-    vector<float16_t, 1> inputVector = { pixel };
-    VectorRef<DATA_TYPE_FLOAT16> Biases = {inputBiases, 0 };
-    MatrixRef<DATA_TYPE_FLOAT16, 1, 1, MATRIX_LAYOUT_MUL_OPTIMAL> MulMatrix = { inputWeights, 0, 0 };
+    float16_t firstValueInDebug = debugBuffer.Load<float16_t>(0);
 
-	gOutput[DTid.xy] = float4(pixel.xxx, 1);
+	gOutput[DTid.xy] = float4(pixel.xxx, firstValueInDebug);
 }

@@ -27,3 +27,10 @@ Samples/Desktop/D3D12HelloWorld/src/HelloVAEncode/*.h264
 /Samples/Desktop/D3D12Raytracing/src/D3D12OMMOfflineBaker/treeModel.bin
 /Samples/Desktop/D3D12Raytracing/src/D3D12OMMOfflineBaker/treeOMM.bin
 /Samples/Desktop/D3D12Raytracing/src/D3D12OMMOfflineBaker/jacaranda_tree_4k.obj
+/Samples/Desktop/D3D12CooperativeVectors/src/ClearShader.csh
+/Samples/Desktop/D3D12CooperativeVectors/src/InferenceCoopVec.csh
+/Samples/Desktop/D3D12CooperativeVectors/src/InferenceNoCoopVec.csh
+/Samples/Desktop/D3D12CooperativeVectors/src/shaders.csh
+/Samples/Desktop/D3D12CooperativeVectors/src/TrainingCoopVec.csh
+/Samples/Desktop/D3D12CooperativeVectors/src/TrainingNoCoopVec.csh
+/Samples/Desktop/D3D12CooperativeVectors/src/Visualizer.csh

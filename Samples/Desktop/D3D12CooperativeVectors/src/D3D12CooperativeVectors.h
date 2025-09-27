@@ -13,6 +13,7 @@
 
 #include "DXSample.h"
 #include "Dataset.h"
+#include "Shared.h"
 
 using namespace DirectX;
 
@@ -54,12 +55,20 @@ private:
 
     // App resources.
     ComPtr<ID3D12Resource> m_visualizerTexture;
-    ComPtr<ID3D12Resource> m_cooperativeVectorBufferInputUploadWeights;
-    ComPtr<ID3D12Resource> m_cooperativeVectorBufferInputMulOptimalWeights;
-    ComPtr<ID3D12Resource> m_cooperativeVectorBufferInputBiases;
-    ComPtr<ID3D12Resource> m_cooperativeVectorBufferOutput;
+    ComPtr<ID3D12Resource> m_networkWeightsAndBiases, m_networkWeightsAndBiasesUpload;
+    ComPtr<ID3D12Resource> m_forwardPassOutput;
+    //ComPtr<ID3D12Resource> m_cooperativeVectorBufferInputMulOptimalWeights;
+    //ComPtr<ID3D12Resource> m_cooperativeVectorBufferInputBiases;
+    //ComPtr<ID3D12Resource> m_cooperativeVectorBufferOutput;
+    ComPtr<ID3D12Resource> m_debugBuffer;
 
-    D3D12_LINEAR_ALGEBRA_MATRIX_CONVERSION_DEST_INFO m_destInfos[2] = {};
+    ComPtr<ID3D12Resource> m_dynamicData;
+    D3D12_GPU_VIRTUAL_ADDRESS m_networkOffsetsGPUVA = 0;
+
+    static const UINT NUM_LAYERS = 3;
+    D3D12_LINEAR_ALGEBRA_MATRIX_CONVERSION_SRC_INFO m_srcInfos[NUM_LAYERS - 1] = {};
+    D3D12_LINEAR_ALGEBRA_MATRIX_CONVERSION_DEST_INFO m_destInfos[NUM_LAYERS-1] = {};
+    NetworkOffsets m_layerOffsets[NUM_LAYERS-1];
     
     // Dataset resources.
     Dataset m_trainingSet, m_testSet;
