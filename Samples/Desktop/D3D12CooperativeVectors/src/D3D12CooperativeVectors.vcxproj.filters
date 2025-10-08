@@ -80,6 +80,9 @@
     <None Include="Shared.h">
       <Filter>Assets\Shaders</Filter>
     </None>
+    <None Include="BackPropCommon.hlsli">
+      <Filter>Assets\Shaders</Filter>
+    </None>
   </ItemGroup>
   <ItemGroup>
     <FxCompile Include="shaders.hlsl">
@@ -101,6 +104,12 @@
       <Filter>Assets\Shaders</Filter>
     </FxCompile>
     <FxCompile Include="ClearShader.hlsl">
+      <Filter>Assets\Shaders</Filter>
+    </FxCompile>
+    <FxCompile Include="BackPropCoopVec.hlsl">
+      <Filter>Assets\Shaders</Filter>
+    </FxCompile>
+    <FxCompile Include="TestImages.hlsl">
       <Filter>Assets\Shaders</Filter>
     </FxCompile>
   </ItemGroup>

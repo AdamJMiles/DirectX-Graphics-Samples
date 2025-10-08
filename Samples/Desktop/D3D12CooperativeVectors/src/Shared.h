@@ -5,7 +5,7 @@
 typedef unsigned int uint;
 #endif
 
-#define RootSig "RootFlags(CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED), RootConstants(b0, num32BitConstants=1), SRV(t0), SRV(t1), SRV(t2), SRV(t3), SRV(t4), UAV(u0), UAV(u1), UAV(u2)"
+#define RootSig "RootFlags(CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED), RootConstants(b0, num32BitConstants=3), SRV(t0), SRV(t1), SRV(t2), SRV(t3), SRV(t4), UAV(u0), UAV(u1), UAV(u2), UAV(u3)"
 
 enum BindingSlots
 {
@@ -17,7 +17,10 @@ enum BindingSlots
     OUTPUT_OFFSETS_SRV = 5,             // t4
     NETWORK_WEIGHTS_AND_BIASES_UAV = 6, // u0
     FORWARD_OUTPUTS_UAV = 7,            // u1
+	TEST_RESULTS_UAV = 7,               // u1 (same as above)
     DEBUG_UAV = 8,                      // u2
+	ACCUMULATED_GRADIENTS_UAV = 9,      // u3
+	EPOCH_RESULTS_UAV = 9			    // u3 (same as above)
 };
 
 static const uint IMAGE_WIDTH = 28;
@@ -33,11 +36,6 @@ struct NetworkOffsets
 {
     uint weightsOffset;
     uint biasesOffset;
-    uint pad0, pad1;
-};
-
-struct OutputOffsets
-{
-    uint postActivationsOffset;
-    uint pad0, pad1, pad2;
+    uint accumulatedWeightsOffset;
+	uint accumulatedBiasesOffset;
 };

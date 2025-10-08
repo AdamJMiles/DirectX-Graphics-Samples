@@ -2,10 +2,11 @@
 
 
 StructuredBuffer<NetworkOffsets> g_networkOffsets : register(t3);
-StructuredBuffer<OutputOffsets> g_outputOffsets : register(t4);
 
 ByteAddressBuffer g_imageBuffer : register(t0);
 ByteAddressBuffer g_labelBuffer : register(t1);
+
+RWByteAddressBuffer g_debugBuffer : register(u2);
 
 float16_t GetPixel(uint imageIndex, uint inputIndex)
 {
@@ -45,4 +46,22 @@ void ActivationFunction(inout vector<float16_t, N> x)
     {
         x[i] = 1.0h / (1.0h + exp(-x[i]));
     }
+}
+
+float16_t ActivationFunctionDerivative(float16_t x)
+{
+    return x * (1.0h - x);
+}
+
+template<int N>
+vector<float16_t, N> ActivationFunctionDerivative(inout vector<float16_t, N> input)
+{
+    vector<float16_t, N> output;
+
+    for (uint i = 0; i < N; ++i)
+    {
+        output[i] = ActivationFunctionDerivative(input[i]);
+    }
+
+    return output;
 }

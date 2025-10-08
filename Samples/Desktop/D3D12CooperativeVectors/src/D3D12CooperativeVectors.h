@@ -52,14 +52,19 @@ private:
     ComPtr<ID3D12PipelineState> m_pipelineState, m_visualizerPSO;
     ComPtr<ID3D12PipelineState> m_trainingCoopVecPSO, m_trainingNoCoopVecPSO;
     ComPtr<ID3D12PipelineState> m_inferenceCoopVecPSO, m_inferenceNoCoopVecPSO;
+	ComPtr<ID3D12PipelineState> m_backPropCoopVecPSO;
+    ComPtr<ID3D12PipelineState> m_testImagesPSO;
 
     // App resources.
     ComPtr<ID3D12Resource> m_visualizerTexture;
     ComPtr<ID3D12Resource> m_networkWeightsAndBiases, m_networkWeightsAndBiasesUpload;
     ComPtr<ID3D12Resource> m_forwardPassOutput;
+    ComPtr<ID3D12Resource> m_accumulatedGradients;
     //ComPtr<ID3D12Resource> m_cooperativeVectorBufferInputMulOptimalWeights;
     //ComPtr<ID3D12Resource> m_cooperativeVectorBufferInputBiases;
     //ComPtr<ID3D12Resource> m_cooperativeVectorBufferOutput;
+    ComPtr<ID3D12Resource> m_testResultsBuffer;
+	ComPtr<ID3D12Resource> m_epochResultsBuffer;
     ComPtr<ID3D12Resource> m_debugBuffer;
 
     ComPtr<ID3D12Resource> m_dynamicData;
@@ -68,6 +73,7 @@ private:
     static const UINT NUM_LAYERS = 3;
     D3D12_LINEAR_ALGEBRA_MATRIX_CONVERSION_SRC_INFO m_srcInfos[NUM_LAYERS - 1] = {};
     D3D12_LINEAR_ALGEBRA_MATRIX_CONVERSION_DEST_INFO m_destInfos[NUM_LAYERS-1] = {};
+    D3D12_LINEAR_ALGEBRA_MATRIX_CONVERSION_DEST_INFO m_accumulatedGradientInfos[NUM_LAYERS - 1] = {};
     NetworkOffsets m_layerOffsets[NUM_LAYERS-1];
     
     // Dataset resources.

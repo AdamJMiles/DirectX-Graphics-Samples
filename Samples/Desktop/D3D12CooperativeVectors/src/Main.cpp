@@ -15,6 +15,6 @@
 _Use_decl_annotations_
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow)
 {
-    D3D12CooperativeVectors sample(1280, 720, L"D3D12 Cooperative Vectors Sample");
+    D3D12CooperativeVectors sample(2800, 1400, L"D3D12 Cooperative Vectors Sample");
     return Win32Application::Run(&sample, hInstance, nCmdShow);
 }

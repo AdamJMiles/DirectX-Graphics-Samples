@@ -24,8 +24,10 @@
 #include "InferenceNoCoopVec.csh"
 #include "TrainingCoopVec.csh"
 #include "TrainingNoCoopVec.csh"
+#include "BackPropCoopVec.csh"
+#include "TestImages.csh"
 
-static const UINT MAX_BATCH_SIZE = 1E6;
+static const UINT MAX_BATCH_SIZE = 60000;
 
 extern "C" { __declspec(dllexport) extern const UINT D3D12SDKVersion = D3D12_PREVIEW_SDK_VERSION; }
 extern "C" { __declspec(dllexport) extern const char* D3D12SDKPath = u8"."; }
@@ -146,6 +148,12 @@ void D3D12CooperativeVectors::LoadPipeline()
         UINT MatrixVectorMulAddPropCount = CoopVecProperties.MatrixVectorMulAddPropCount;
         std::vector<D3D12_COOPERATIVE_VECTOR_PROPERTIES_MUL> properties(MatrixVectorMulAddPropCount);
         CoopVecProperties.pMatrixVectorMulAddProperties = properties.data();
+
+        std::vector< D3D12_COOPERATIVE_VECTOR_PROPERTIES_ACCUMULATE> outerProperties(CoopVecProperties.OuterProductAccumulatePropCount);
+        CoopVecProperties.pOuterProductAccumulateProperties = outerProperties.data();
+
+        std::vector< D3D12_COOPERATIVE_VECTOR_PROPERTIES_ACCUMULATE> vectorProperties(CoopVecProperties.VectorAccumulatePropCount);
+        CoopVecProperties.pVectorAccumulateProperties = vectorProperties.data();
 
         // CheckFeatureSupport returns the supported input combinations for the mul intrinsics
         m_device->CheckFeatureSupport(D3D12_FEATURE_COOPERATIVE_VECTOR, &CoopVecProperties,
@@ -303,6 +311,16 @@ void D3D12CooperativeVectors::LoadAssets()
     ThrowIfFailed(m_device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(&m_inferenceNoCoopVecPSO)));
     m_inferenceNoCoopVecPSO->SetName(L"Inference No Cooperative Vector PSO");
 
+    // Back Prop PSOs
+    psoDesc.CS = { g_BackPropCoopVec, sizeof(g_BackPropCoopVec) };
+    ThrowIfFailed(m_device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(&m_backPropCoopVecPSO)));
+    m_backPropCoopVecPSO->SetName(L"BackProp Cooperative Vector PSO");
+
+	// Test Images PSO
+	psoDesc.CS = { g_TestImages, sizeof(g_TestImages) };
+	ThrowIfFailed(m_device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(&m_testImagesPSO)));
+	m_testImagesPSO->SetName(L"Test Images PSO");
+
     ComPtr<ID3D12DevicePreview> devicePreview;
     ThrowIfFailed(m_device.As(&devicePreview));
 
@@ -311,6 +329,7 @@ void D3D12CooperativeVectors::LoadAssets()
     size_t networkInputsSize_Upload = 0;
     size_t networkInputsSize_Default = 0;
     size_t trainingOutputsSize = 0;
+	size_t accumulatedGradientsSize = 0;
 
     for(int i = 0; i < ARRAYSIZE(layerSizes) - 1; i++)
     {
@@ -329,6 +348,11 @@ void D3D12CooperativeVectors::LoadAssets()
         m_srcInfos[i].SrcStride = m_destInfos[i].NumColumns * sizeof(DirectX::PackedVector::HALF);
 
         devicePreview->GetLinearAlgebraMatrixConversionDestinationInfo(&m_destInfos[i]);
+
+		m_accumulatedGradientInfos[i] = m_destInfos[i]; // Same layout and type as weights
+		m_accumulatedGradientInfos[i].DestDataType = D3D12_LINEAR_ALGEBRA_DATATYPE_FLOAT32; // Accumulated gradients are float32
+
+        devicePreview->GetLinearAlgebraMatrixConversionDestinationInfo(&m_accumulatedGradientInfos[i]);
 
         // Default resource offsets
         {
@@ -354,10 +378,23 @@ void D3D12CooperativeVectors::LoadAssets()
 
         // Forward pass size calculation
         {
-            trainingOutputsSize += layerSizes[i+1] * GetSizeOfLinearAlgebraDatatype(m_destInfos[i].DestDataType); // Post-activation function values for Layer i
+            //trainingOutputsSize += layerSizes[i+1] * GetSizeOfLinearAlgebraDatatype(m_destInfos[i].DestDataType); // Post-activation function values for Layer i
+        }
+
+        {
+			// Accumulated gradients size calculation
+            accumulatedGradientsSize = AlignToMultipleOfPowerOfTwo(accumulatedGradientsSize, 128); // TODO. Ask D3D team for this as a constant
+			m_layerOffsets[i].accumulatedWeightsOffset = (uint)accumulatedGradientsSize;
+			accumulatedGradientsSize += m_accumulatedGradientInfos[i].DestSize; // Accumulated gradients for weights
+
+			accumulatedGradientsSize = AlignToMultipleOfPowerOfTwo(accumulatedGradientsSize, 64); // TODO. Ask D3D team for this as a constant
+			m_layerOffsets[i].accumulatedBiasesOffset = (uint)accumulatedGradientsSize;
+			accumulatedGradientsSize += m_accumulatedGradientInfos[i].NumRows * sizeof(DirectX::PackedVector::HALF); // Accumulated gradients for biases
         }
     }
 
+    // TODO properly
+    trainingOutputsSize = (NUM_HIDDEN_NEURONS * 2 + NUM_OUTPUT_NEURONS) * sizeof(DirectX::PackedVector::HALF);
     trainingOutputsSize *= MAX_BATCH_SIZE;
 
     // Create a 1MB buffer in default heap to be used as a cooperative vector.
@@ -368,6 +405,7 @@ void D3D12CooperativeVectors::LoadAssets()
     D3D12_RESOURCE_DESC networkUploadResourceDesc = CD3DX12_RESOURCE_DESC::Buffer(networkInputsSize_Upload);
     D3D12_RESOURCE_DESC forwardPassResourceDesc = CD3DX12_RESOURCE_DESC::Buffer(trainingOutputsSize, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
     D3D12_RESOURCE_DESC debugResourceDesc = CD3DX12_RESOURCE_DESC::Buffer(1 * 1024 * 1024, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+	D3D12_RESOURCE_DESC accumulatedGradientsResourceDesc = CD3DX12_RESOURCE_DESC::Buffer(accumulatedGradientsSize, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
 
     //D3D12_RESOURCE_DESC resourceDesc = CD3DX12_RESOURCE_DESC::Buffer(1 * 1024 * 1024); // Buffer for the cooperative vector.
 
@@ -398,6 +436,28 @@ void D3D12CooperativeVectors::LoadAssets()
         ThrowIfFailed(m_device->CreateCommittedResource(
             &defaultProps,
             D3D12_HEAP_FLAG_NONE,
+            &networkResourceDesc,
+            D3D12_RESOURCE_STATE_COMMON,
+            nullptr,
+            IID_PPV_ARGS(&m_networkWeightsAndBiases)));
+        m_networkWeightsAndBiases->SetName(L"Network");
+    }
+
+    {
+		ThrowIfFailed(m_device->CreateCommittedResource(
+			&defaultProps,
+			D3D12_HEAP_FLAG_NONE,
+			&accumulatedGradientsResourceDesc,
+			D3D12_RESOURCE_STATE_COMMON,
+			nullptr,
+			IID_PPV_ARGS(&m_accumulatedGradients)));
+		m_accumulatedGradients->SetName(L"Accumulated Gradients");
+    }
+
+    {
+        ThrowIfFailed(m_device->CreateCommittedResource(
+            &defaultProps,
+            D3D12_HEAP_FLAG_NONE,
             &forwardPassResourceDesc,
             D3D12_RESOURCE_STATE_COMMON,
             nullptr,
@@ -414,6 +474,32 @@ void D3D12CooperativeVectors::LoadAssets()
             nullptr,
             IID_PPV_ARGS(&m_debugBuffer)));
         m_debugBuffer->SetName(L"Debug Buffer");
+    }
+
+    {
+        D3D12_RESOURCE_DESC testResultsDesc = CD3DX12_RESOURCE_DESC::Buffer(60000 * 24, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+
+        ThrowIfFailed(m_device->CreateCommittedResource(
+            &defaultProps,
+            D3D12_HEAP_FLAG_NONE,
+            &testResultsDesc,
+            D3D12_RESOURCE_STATE_COMMON,
+            nullptr,
+            IID_PPV_ARGS(&m_testResultsBuffer)));
+        m_testResultsBuffer->SetName(L"Test Results Buffer");
+    }
+
+    {
+		D3D12_HEAP_PROPERTIES customReadbackProps = CD3DX12_HEAP_PROPERTIES(D3D12_CPU_PAGE_PROPERTY_WRITE_BACK, D3D12_MEMORY_POOL_L0);
+		D3D12_RESOURCE_DESC epochResultDesc = CD3DX12_RESOURCE_DESC::Buffer(65536, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+		ThrowIfFailed(m_device->CreateCommittedResource(
+			&customReadbackProps,
+			D3D12_HEAP_FLAG_NONE,
+			&epochResultDesc,
+			D3D12_RESOURCE_STATE_COMMON,
+			nullptr,
+			IID_PPV_ARGS(&m_epochResultsBuffer)));
+		m_epochResultsBuffer->SetName(L"Epoch Results Buffer");
     }
 
     {
@@ -620,7 +706,7 @@ void D3D12CooperativeVectors::PopulateCommandList()
         commandListPreview->ConvertLinearAlgebraMatrix(convInfos, ARRAYSIZE(convInfos));
 
         D3D12_RESOURCE_BARRIER uavToNonPixelSRVBarriers[1] = {};
-        uavToNonPixelSRVBarriers[0] = CD3DX12_RESOURCE_BARRIER::Transition(m_networkWeightsAndBiases.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        uavToNonPixelSRVBarriers[0] = CD3DX12_RESOURCE_BARRIER::Transition(m_networkWeightsAndBiases.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
 
         m_commandList->ResourceBarrier(ARRAYSIZE(uavToNonPixelSRVBarriers), uavToNonPixelSRVBarriers);
     }
@@ -644,6 +730,8 @@ void D3D12CooperativeVectors::PopulateCommandList()
     m_commandList->SetComputeRootSignature(m_rootSignature.Get());
     m_commandList->SetComputeRootShaderResourceView(BindingSlots::NETWORK_OFFSETS_SRV, m_dynamicData->GetGPUVirtualAddress() + offset);
 
+    PIXBeginEvent(m_commandList.Get(), PIX_COLOR_DEFAULT, L"Clear Network and Debug");
+
     // Zero out the m_forwardOutputs buffer
     {
         uint numFP16ValuesToClear = (UINT)(m_forwardPassOutput->GetDesc().Width / sizeof(DirectX::PackedVector::HALF));
@@ -652,7 +740,7 @@ void D3D12CooperativeVectors::PopulateCommandList()
         m_commandList->SetComputeRoot32BitConstant(0, numFP16ValuesToClear, 0);
         m_commandList->SetComputeRootUnorderedAccessView(BindingSlots::NETWORK_WEIGHTS_AND_BIASES_UAV, m_forwardPassOutput->GetGPUVirtualAddress());
         
-        uint numThreadGroupsNeeded = (numFP16ValuesToClear + 31) / 32;
+        uint numThreadGroupsNeeded = (numFP16ValuesToClear + 1023) / 1024;
         m_commandList->Dispatch(numThreadGroupsNeeded, 1, 1);
     }
 
@@ -664,50 +752,137 @@ void D3D12CooperativeVectors::PopulateCommandList()
         m_commandList->SetComputeRoot32BitConstant(0, numFP16ValuesToClear, 0);
         m_commandList->SetComputeRootUnorderedAccessView(BindingSlots::NETWORK_WEIGHTS_AND_BIASES_UAV, m_debugBuffer->GetGPUVirtualAddress());
 
-        uint numThreadGroupsNeeded = (numFP16ValuesToClear + 31) / 32;
+        uint numThreadGroupsNeeded = (numFP16ValuesToClear + 1023) / 1024;
         m_commandList->Dispatch(numThreadGroupsNeeded, 1, 1);
     }
 
+	PIXEndEvent(m_commandList.Get());
+
+    /*
+    PIXBeginEvent(m_commandList.Get(), PIX_COLOR_DEFAULT, L"Copy Weights and Biases");
+    {
+		D3D12_RESOURCE_BARRIER preCopyBarriers[2] = {};
+		preCopyBarriers[0] = CD3DX12_RESOURCE_BARRIER::Transition(m_accumulatedGradients.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST);
+		preCopyBarriers[1] = CD3DX12_RESOURCE_BARRIER::Transition(m_networkWeightsAndBiases.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_SOURCE);
+
+        m_commandList->ResourceBarrier(ARRAYSIZE(preCopyBarriers), preCopyBarriers);
+
+		D3D12_LINEAR_ALGEBRA_MATRIX_CONVERSION_INFO convInfos[(NUM_LAYERS - 1)] = {};
+
+        for(int i = 0; i < (NUM_LAYERS - 1); i++)
+        {
+            convInfos[i].DataDesc.SrcVA = m_networkWeightsAndBiases->GetGPUVirtualAddress() + m_layerOffsets[i].weightsOffset;
+            convInfos[i].DataDesc.DestVA = m_accumulatedGradients->GetGPUVirtualAddress() + m_layerOffsets[i].accumulatedWeightsOffset;
+			
+            convInfos[i].SrcInfo.SrcDataType = m_destInfos[i].DestDataType; // Source is the weights in OUTER_PRODUCT_OPTIMAL layout
+			convInfos[i].SrcInfo.SrcLayout = m_destInfos[i].DestLayout;
+			convInfos[i].SrcInfo.SrcSize = m_destInfos[i].DestSize;
+            
+            convInfos[i].DestInfo = m_accumulatedGradientInfos[i];
+
+            // Copy biases
+            UINT biasesSize = m_destInfos[i].NumRows * GetSizeOfLinearAlgebraDatatype(m_destInfos[i].DestDataType);
+
+            commandListPreview->CopyBufferRegion(
+                m_accumulatedGradients.Get(),
+                m_layerOffsets[i].accumulatedBiasesOffset,
+                m_networkWeightsAndBiases.Get(),
+                m_layerOffsets[i].biasesOffset,
+                biasesSize);
+		}
+
+        commandListPreview->ConvertLinearAlgebraMatrix(convInfos, ARRAYSIZE(convInfos));
+
+        D3D12_RESOURCE_BARRIER postCopyBarriers[2] = {};
+		postCopyBarriers[0] = CD3DX12_RESOURCE_BARRIER::Transition(m_accumulatedGradients.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        postCopyBarriers[1] = CD3DX12_RESOURCE_BARRIER::Transition(m_networkWeightsAndBiases.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+		m_commandList->ResourceBarrier(ARRAYSIZE(postCopyBarriers), postCopyBarriers);
+    }
+	PIXEndEvent(m_commandList.Get());*/
+
     firstFrame = false;
 
-    D3D12_RESOURCE_BARRIER preworkBarriers[2] = {};
+    D3D12_RESOURCE_BARRIER preworkBarriers[3] = {};
     preworkBarriers[0] = CD3DX12_RESOURCE_BARRIER::Transition(m_renderTargets[m_frameIndex].Get(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_COPY_DEST);
     //preworkBarriers[1] = CD3DX12_RESOURCE_BARRIER::Transition(m_networkWeightsAndBiases.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
     preworkBarriers[1] = CD3DX12_RESOURCE_BARRIER::Transition(m_visualizerTexture.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-    //preworkBarriers[3] = CD3DX12_RESOURCE_BARRIER::UAV(m_cooperativeVectorBufferOutput.Get());
+    preworkBarriers[2] = CD3DX12_RESOURCE_BARRIER::UAV(m_accumulatedGradients.Get());
 
     m_commandList->ResourceBarrier(ARRAYSIZE(preworkBarriers), preworkBarriers);
 
-    
+    UINT batchSize = 1000;// m_trainingSet.GetNumImages();
 
-    if (true)
+    char str[256];
+	sprintf_s(str, "Epoch %d\r\n", m_frameNumber);
+	//OutputDebugStringA(str);
+
+    PIXBeginEvent(m_commandList.Get(), PIX_COLOR_DEFAULT, str);
+
+    for (UINT i = 0; i < m_trainingSet.GetNumImages(); i += batchSize)
     {
-        static bool useCoopVec = true;
+        m_commandList->SetComputeRoot32BitConstant(BindingSlots::ROOT_CONSTANTS, i, 2);
 
-        if (useCoopVec)
-            m_commandList->SetPipelineState(m_trainingCoopVecPSO.Get());
-        else
-            m_commandList->SetPipelineState(m_trainingNoCoopVecPSO.Get());
+        if (true)
+        {
+            PIXBeginEvent(m_commandList.Get(), PIX_COLOR_DEFAULT, L"Training Pass");
 
-        UINT forwardPassStride = (NUM_HIDDEN_NEURONS + NUM_OUTPUT_NEURONS) * sizeof(DirectX::PackedVector::HALF);
-        m_commandList->SetComputeRoot32BitConstant(BindingSlots::ROOT_CONSTANTS, forwardPassStride, 0);
+            static bool useCoopVec = true;
 
-        m_commandList->SetComputeRootShaderResourceView(BindingSlots::IMAGE_BUFFER, m_testSet.GetImageDataVA());
-        m_commandList->SetComputeRootShaderResourceView(BindingSlots::LABEL_BUFFER, m_testSet.GetLabelsVA());
+            if (useCoopVec)
+                m_commandList->SetPipelineState(m_trainingCoopVecPSO.Get());
+            else
+                m_commandList->SetPipelineState(m_trainingNoCoopVecPSO.Get());
 
-        m_commandList->SetComputeRootShaderResourceView(BindingSlots::NETWORK_WEIGHTS_AND_BIASES_SRV, m_networkWeightsAndBiases->GetGPUVirtualAddress());
-        m_commandList->SetComputeRootShaderResourceView(BindingSlots::NETWORK_OFFSETS_SRV, m_dynamicData->GetGPUVirtualAddress());
-        m_commandList->SetComputeRootUnorderedAccessView(BindingSlots::FORWARD_OUTPUTS_UAV, m_forwardPassOutput->GetGPUVirtualAddress());
+            UINT forwardPassStride = (NUM_HIDDEN_NEURONS * 2 + NUM_OUTPUT_NEURONS) * sizeof(DirectX::PackedVector::HALF);
+            m_commandList->SetComputeRoot32BitConstant(BindingSlots::ROOT_CONSTANTS, forwardPassStride, 0);
 
-        //m_commandList->Dispatch(m_testSet.GetNumImages(), 1, 1);
-        m_commandList->Dispatch(65535, 1, 1);
+		    //UINT numImages = m_testSet.GetNumImages();
+		    m_commandList->SetComputeRoot32BitConstant(BindingSlots::ROOT_CONSTANTS, batchSize, 1);
+
+            m_commandList->SetComputeRootShaderResourceView(BindingSlots::IMAGE_BUFFER, m_trainingSet.GetImageDataVA());
+            m_commandList->SetComputeRootShaderResourceView(BindingSlots::LABEL_BUFFER, m_trainingSet.GetLabelsVA());
+
+            m_commandList->SetComputeRootShaderResourceView(BindingSlots::NETWORK_WEIGHTS_AND_BIASES_SRV, m_networkWeightsAndBiases->GetGPUVirtualAddress());
+            m_commandList->SetComputeRootShaderResourceView(BindingSlots::NETWORK_OFFSETS_SRV, m_dynamicData->GetGPUVirtualAddress());
+            m_commandList->SetComputeRootUnorderedAccessView(BindingSlots::FORWARD_OUTPUTS_UAV, m_forwardPassOutput->GetGPUVirtualAddress());
+			m_commandList->SetComputeRootUnorderedAccessView(BindingSlots::ACCUMULATED_GRADIENTS_UAV, m_accumulatedGradients->GetGPUVirtualAddress());
+		    m_commandList->SetComputeRootUnorderedAccessView(BindingSlots::DEBUG_UAV, m_debugBuffer->GetGPUVirtualAddress());
+
+		    UINT numThreadsGroups = (batchSize + 31) / 32;
+            m_commandList->Dispatch(numThreadsGroups, 1, 1);
+
+		    PIXEndEvent(m_commandList.Get());
+        }
+
+        D3D12_RESOURCE_BARRIER postCoopVecBarriers[2] = {};
+        postCoopVecBarriers[0] = CD3DX12_RESOURCE_BARRIER::UAV(nullptr);
+        postCoopVecBarriers[1] = CD3DX12_RESOURCE_BARRIER::Transition(m_networkWeightsAndBiases.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    
+        m_commandList->ResourceBarrier(ARRAYSIZE(postCoopVecBarriers), postCoopVecBarriers);
+
+        // Back propogation
+        if (true)
+        {
+            PIXBeginEvent(m_commandList.Get(), PIX_COLOR_DEFAULT, L"Backpropogation");
+
+            m_commandList->SetPipelineState(m_backPropCoopVecPSO.Get());
+
+            m_commandList->SetComputeRootShaderResourceView(BindingSlots::NETWORK_WEIGHTS_AND_BIASES_SRV, m_dynamicData->GetGPUVirtualAddress());
+            m_commandList->SetComputeRootUnorderedAccessView(BindingSlots::NETWORK_WEIGHTS_AND_BIASES_UAV, m_networkWeightsAndBiases->GetGPUVirtualAddress());
+        
+            UINT numThreadsGroups = (batchSize + 31) / 32;
+            m_commandList->Dispatch(numThreadsGroups, 1, 1);
+
+            PIXEndEvent(m_commandList.Get());
+        }
+
+        D3D12_RESOURCE_BARRIER postBackPropBarriers[2] = {};
+        postBackPropBarriers[0] = CD3DX12_RESOURCE_BARRIER::UAV(nullptr);
+        postBackPropBarriers[1] = CD3DX12_RESOURCE_BARRIER::Transition(m_networkWeightsAndBiases.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        m_commandList->ResourceBarrier(ARRAYSIZE(postBackPropBarriers), postBackPropBarriers);
     }
 
-    D3D12_RESOURCE_BARRIER postCoopVecBarriers[1] = {};
-    postCoopVecBarriers[0] = CD3DX12_RESOURCE_BARRIER::UAV(nullptr);
-    
-    m_commandList->ResourceBarrier(ARRAYSIZE(postCoopVecBarriers), postCoopVecBarriers);
-
+    PIXEndEvent(m_commandList.Get());
     /*
     if (false)
     {
@@ -732,16 +907,41 @@ void D3D12CooperativeVectors::PopulateCommandList()
         commandListPreview->ConvertLinearAlgebraMatrix(&debugConvInfo, 1);
     }*/
 
+    // Test pass
+    if (true)
+    {
+        PIXBeginEvent(m_commandList.Get(), PIX_COLOR_DEFAULT, L"Test Pass");
+
+		m_commandList->SetPipelineState(m_testImagesPSO.Get());
+        m_commandList->SetComputeRootShaderResourceView(BindingSlots::NETWORK_WEIGHTS_AND_BIASES_SRV, m_networkWeightsAndBiases->GetGPUVirtualAddress());
+        m_commandList->SetComputeRootShaderResourceView(BindingSlots::IMAGE_BUFFER, m_testSet.GetImageDataVA()); // This!
+        m_commandList->SetComputeRootShaderResourceView(BindingSlots::LABEL_BUFFER, m_testSet.GetLabelsVA());
+		m_commandList->SetComputeRootUnorderedAccessView(BindingSlots::TEST_RESULTS_UAV, m_testResultsBuffer->GetGPUVirtualAddress());
+		m_commandList->SetComputeRootUnorderedAccessView(BindingSlots::EPOCH_RESULTS_UAV, m_epochResultsBuffer->GetGPUVirtualAddress() + m_frameNumber * 4);
+		m_commandList->SetComputeRoot32BitConstant(BindingSlots::ROOT_CONSTANTS, m_testSet.GetNumImages(), 0);
+
+		UINT numThreadsGroups = (m_testSet.GetNumImages() + 31) / 32;
+        //UINT numThreadsGroups = (batchSize + 31) / 32;
+
+		m_commandList->Dispatch(numThreadsGroups, 1, 1);
+
+        PIXEndEvent(m_commandList.Get());
+    }
+
     // Visualizer pass
     if(true)
     {
+        PIXBeginEvent(m_commandList.Get(), PIX_COLOR_DEFAULT, L"Visualiser");
+
         m_commandList->SetPipelineState(m_visualizerPSO.Get());
         m_commandList->SetComputeRootShaderResourceView(BindingSlots::IMAGE_BUFFER, m_testSet.GetImageDataVA()); // This!
         m_commandList->SetComputeRootShaderResourceView(BindingSlots::LABEL_BUFFER, m_testSet.GetLabelsVA());
 
         m_commandList->SetComputeRootShaderResourceView(BindingSlots::NETWORK_WEIGHTS_AND_BIASES_SRV, m_networkWeightsAndBiases->GetGPUVirtualAddress());
 
-        m_commandList->Dispatch(1, 1, 1);
+        m_commandList->Dispatch(150, 75, 1);
+
+        PIXEndEvent(m_commandList.Get());
     }
 
     // TODO. Enhanced Barriers?
@@ -763,6 +963,27 @@ void D3D12CooperativeVectors::PopulateCommandList()
     m_commandList->ResourceBarrier(ARRAYSIZE(postRenderBarriers), postRenderBarriers);
 
     ThrowIfFailed(m_commandList->Close());
+
+    static int nextEpochToPrint = m_frameNumber;
+
+	UINT* epochResults = nullptr;
+	ThrowIfFailed(m_epochResultsBuffer->Map(0, nullptr, (void**)&epochResults));
+
+    while (true)
+    {
+		UINT* nextResult = epochResults + nextEpochToPrint;
+
+        if (*nextResult != 0)
+        {
+            sprintf_s(str, "Epoch %d accuracy: %.2f%%\r\n", nextEpochToPrint, *nextResult / 100.0f);
+            OutputDebugStringA(str);
+            nextEpochToPrint++;
+        }
+        else
+        {
+            break;
+        }
+    }
 }
 
 void D3D12CooperativeVectors::WaitForPreviousFrame()
