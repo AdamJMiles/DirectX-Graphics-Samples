@@ -6,11 +6,13 @@ using namespace dx::linalg;
 cbuffer Params
 {
     uint numImages;
+    uint epochIndex;
 };
 
 ByteAddressBuffer networkInputs : register(t2);
 RWByteAddressBuffer g_resultsBuffer : register(u1);
-RWByteAddressBuffer g_epochBuffer : register(u3);
+//RWByteAddressBuffer g_epochBuffer : register(u3);
+RWStructuredBuffer<uint> g_epochBuffer : register(u4);
 
 [numthreads(32, 1, 1)]
 [RootSignature(RootSig)]
@@ -65,6 +67,6 @@ void main(uint3 DTid : SV_DispatchThreadID)
 
     if(correctLabel == maxIndex)
     {
-        g_epochBuffer.InterlockedAdd(0, 1);
+        InterlockedAdd(g_epochBuffer[epochIndex], 1);
 	}
 }

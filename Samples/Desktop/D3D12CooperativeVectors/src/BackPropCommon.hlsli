@@ -7,7 +7,7 @@
 using namespace dx::linalg;
 #endif
                                              
-static const float16_t LEARNING_RATE = 0.01h;//0.15h;
+static const float16_t LEARNING_RATE = 0.05h;
 static const uint NUM_INPUTS_TO_LOAD = 784;
 
 cbuffer Params

@@ -208,7 +208,7 @@ void D3D12CooperativeVectors::LoadPipeline()
     {
         // Describe and create a render target view (RTV) descriptor heap.
         D3D12_DESCRIPTOR_HEAP_DESC uavHeapDesc = {};
-        uavHeapDesc.NumDescriptors = 2;
+        uavHeapDesc.NumDescriptors = 3;
         uavHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
         uavHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
         ThrowIfFailed(m_device->CreateDescriptorHeap(&uavHeapDesc, IID_PPV_ARGS(&m_uavHeap)));
@@ -500,6 +500,18 @@ void D3D12CooperativeVectors::LoadAssets()
 			nullptr,
 			IID_PPV_ARGS(&m_epochResultsBuffer)));
 		m_epochResultsBuffer->SetName(L"Epoch Results Buffer");
+
+        // Create a StructuredBuffer UAV for the epoch results
+        // in the 3rd descriptor of the UAV heap.
+        D3D12_CPU_DESCRIPTOR_HANDLE uavHandle = m_uavHeap->GetCPUDescriptorHandleForHeapStart();
+        uavHandle.ptr += 2 * m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+        uavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+        uavDesc.Buffer.NumElements = epochResultDesc.Width / sizeof(UINT);
+        uavDesc.Buffer.FirstElement = 0;
+        uavDesc.Format = DXGI_FORMAT_UNKNOWN;
+        uavDesc.Buffer.StructureByteStride = sizeof(UINT);
+        m_device->CreateUnorderedAccessView(m_epochResultsBuffer.Get(), nullptr, &uavDesc, uavHandle);
     }
 
     {
@@ -810,7 +822,7 @@ void D3D12CooperativeVectors::PopulateCommandList()
 
     m_commandList->ResourceBarrier(ARRAYSIZE(preworkBarriers), preworkBarriers);
 
-    UINT batchSize = 1000;// m_trainingSet.GetNumImages();
+    UINT batchSize = 100;// m_trainingSet.GetNumImages();
 
     char str[256];
 	sprintf_s(str, "Epoch %d\r\n", m_frameNumber);
@@ -918,7 +930,14 @@ void D3D12CooperativeVectors::PopulateCommandList()
         m_commandList->SetComputeRootShaderResourceView(BindingSlots::LABEL_BUFFER, m_testSet.GetLabelsVA());
 		m_commandList->SetComputeRootUnorderedAccessView(BindingSlots::TEST_RESULTS_UAV, m_testResultsBuffer->GetGPUVirtualAddress());
 		m_commandList->SetComputeRootUnorderedAccessView(BindingSlots::EPOCH_RESULTS_UAV, m_epochResultsBuffer->GetGPUVirtualAddress() + m_frameNumber * 4);
+
+        // Set 3rd UAV descriptor in the heap (the epoch results buffer)
+        D3D12_GPU_DESCRIPTOR_HANDLE uavHandle = m_uavHeap->GetGPUDescriptorHandleForHeapStart();
+        uavHandle.ptr += 2 * m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        m_commandList->SetComputeRootDescriptorTable(BindingSlots::EPOCH_RESULTS_STRUCTURED_UAV, uavHandle);
+
 		m_commandList->SetComputeRoot32BitConstant(BindingSlots::ROOT_CONSTANTS, m_testSet.GetNumImages(), 0);
+        m_commandList->SetComputeRoot32BitConstant(BindingSlots::ROOT_CONSTANTS, m_frameNumber, 1);
 
 		UINT numThreadsGroups = (m_testSet.GetNumImages() + 31) / 32;
         //UINT numThreadsGroups = (batchSize + 31) / 32;
